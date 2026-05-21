@@ -116,7 +116,7 @@ def _drum_ly(data: dict, title: str) -> str:
 def generate_drums(analysis_dir: Path, title: str, out_dir: Path) -> None:
     data = json.loads((analysis_dir / "analysis.json").read_text())
     ly = _drum_ly(data, title)
-    ly_path = out_dir / "sheet.ly"
+    ly_path = out_dir / "sheet_drums.ly"
     ly_path.write_text(ly)
     print(f"[sheet] .ly written: {ly_path}", flush=True)
     _compile_ly(ly_path, out_dir)
@@ -124,7 +124,7 @@ def generate_drums(analysis_dir: Path, title: str, out_dir: Path) -> None:
 
 # ── Pitch sheet (music21) ────────────────────────────────────────────────────
 
-def generate_pitch(analysis_dir: Path, title: str, out_dir: Path) -> None:
+def generate_pitch(analysis_dir: Path, title: str, out_dir: Path, instrument: str) -> None:
     import music21
 
     midi_path = analysis_dir / "analysis.mid"
@@ -137,7 +137,7 @@ def generate_pitch(analysis_dir: Path, title: str, out_dir: Path) -> None:
     score.metadata = music21.metadata.Metadata()
     score.metadata.title = title
 
-    ly_path = out_dir / "sheet.ly"
+    ly_path = out_dir / f"sheet_{instrument}.ly"
     print(f"[sheet] Exporting LilyPond…", flush=True)
     score.write("lilypond", fp=str(ly_path))
     _compile_ly(ly_path, out_dir)
@@ -157,7 +157,7 @@ def generate(analysis_dir: str, title: str, out_dir: str) -> None:
     if instrument == "drums":
         generate_drums(adir, title, odir)
     else:
-        generate_pitch(adir, title, odir)
+        generate_pitch(adir, title, odir, instrument)
 
 
 if __name__ == "__main__":
