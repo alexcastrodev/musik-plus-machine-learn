@@ -14,10 +14,10 @@ TUI (pipeline container)
   │
   ├─► demucs          isola o stem escolhido → chosen.wav
   │
-  ├─► analyzer        BeatNet + librosa  (bateria)
+  ├─► analyzer        librosa (bateria)
   │   analyzer-pitch  Basic Pitch/Spotify (baixo, guitarra, piano, voz)
   │
-  └─► sheet           LilyPond → PDF
+  └─► sheet           LilyPond → sheet_<instrumento>.pdf
 ```
 
 ## Ferramentas
@@ -25,15 +25,16 @@ TUI (pipeline container)
 | Etapa | Ferramenta |
 |---|---|
 | Separação de stems | [Demucs](https://github.com/adefossez/demucs) `htdemucs_6s` (6 stems) |
-| Beat tracking | [BeatNet](https://github.com/mjhydri/BeatNet) (ISMIR 2021) |
+| Beat tracking | [librosa](https://librosa.org/) `beat_track` |
 | Pitch polifónico | [Basic Pitch](https://github.com/spotify/basic-pitch) (Spotify) |
 | Notação | [LilyPond](https://lilypond.org/) + [music21](https://web.mit.edu/music21/) |
 | TUI | [Rich](https://github.com/Textualize/rich) + [questionary](https://github.com/tmbo/questionary) |
+| Cache | [Redis](https://redis.io/) 7 |
 
 ## Requisitos
 
 - Docker + Docker Compose
-- Ficheiros de audio em `./audio/` (`.flac`, `.mp3`, `.wav`, `.ogg`, `.m4a`)
+- Ficheiros de audio em `./audio/` (`.flac`, `.mp3`, `.wav`, `.ogg`, `.m4a`, `.aiff`)
 
 ## Uso
 
@@ -50,8 +51,32 @@ A TUI:
 2. Pede o título e duração máxima a analisar
 3. Corre o detector — mostra uma tabela com os instrumentos detectados e os seus níveis de energia
 4. Pergunta qual instrumento transcrever
-5. Isola o stem, analisa e gera o PDF
-6. O PDF aparece em `./output/`
+5. Pergunta se quer exportar o stem isolado como WAV
+6. Pergunta se quer gerar a partitura em PDF
+7. Isola o stem, analisa, e gera os outputs escolhidos em `./output/`
+
+## Cache (Redis)
+
+Os resultados de cada etapa são guardados em Redis, indexados por ficheiro de audio. Na segunda execução do mesmo ficheiro, as etapas já concluídas são saltadas.
+
+### Limpar a cache
+
+**Tudo:**
+```bash
+docker compose exec redis redis-cli FLUSHALL
+```
+
+**Ver as chaves existentes:**
+```bash
+docker compose exec redis redis-cli KEYS "musikplus:*"
+```
+
+**Apagar um ficheiro específico:**
+```bash
+docker compose exec redis redis-cli DEL "musikplus:<fingerprint>"
+```
+
+A fingerprint é o SHA-256 dos primeiros 64 KB do ficheiro de audio (mostrada em debug se necessário).
 
 ## Estrutura
 
@@ -60,12 +85,12 @@ services/
 ├── pipeline/        TUI orquestrador (Rich + questionary + Docker CLI)
 ├── detector/        Demucs 6s + RMS → instruments.json
 ├── demucs/          Copia stem escolhido → chosen.wav
-├── analyzer/        BeatNet + librosa → analysis.json       (bateria)
-├── analyzer-pitch/  Basic Pitch → analysis.mid + .json      (outros)
-└── sheet/           LilyPond / music21+LilyPond → sheet.pdf
+├── analyzer/        librosa → analysis.json                    (bateria)
+├── analyzer-pitch/  Basic Pitch → analysis.mid + .json         (outros)
+└── sheet/           LilyPond / music21+LilyPond → sheet_<instrumento>.pdf
 
 audio/               coloque aqui os ficheiros de audio
-output/              PDFs gerados
+output/              PDFs e WAVs gerados
 ```
 
 ## Formatos de audio suportados
@@ -78,18 +103,8 @@ output/              PDFs gerados
 
 | Instrumento | Análise | Notação |
 |---|---|---|
-| Bateria | BeatNet + librosa (kick/snare/hihat) | LilyPond drum notation |
+| Bateria | librosa (kick/snare/hihat) | LilyPond drum notation |
 | Baixo | Basic Pitch | Clave de fá |
 | Guitarra | Basic Pitch | Clave de sol |
 | Piano | Basic Pitch | Grand staff |
 | Voz | Basic Pitch | Clave de sol |
-
-## Configuração
-
-Copiar `.env.example` para `.env` e ajustar:
-
-```env
-DEMUCS_MODEL=htdemucs_6s        # htdemucs (4 stems) ou htdemucs_6s (6 stems)
-MAX_DURATION=300                 # segundos máximos a analisar
-DETECTOR_THRESHOLD_DB=-40        # stems abaixo deste RMS = não presente
-```
