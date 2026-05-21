@@ -7,12 +7,10 @@ Volumes mounted at runtime:
   /stems        → stems volume  (rw) — detector output + chosen.wav
   /analysis     → analysis vol  (rw) — analyzer output
   /output       → output volume (rw) — final PDFs
-  /host-output  → ./output      (rw) — copies PDFs to host
+  /host-output  → ./output      (rw) — copies outputs to host
 
 Calls sibling containers via Docker socket + COMPOSE_FILE/PROJECT env vars.
-Redis (optional) caches completed steps keyed by audio file fingerprint.
 """
-import hashlib
 import json
 import os
 import shutil
@@ -43,7 +41,6 @@ HOST_OUTPUT  = Path("/host-output")
 
 COMPOSE_FILE    = os.getenv("COMPOSE_FILE", "/project/docker-compose.yml")
 COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT_NAME", "musikplus")
-REDIS_URL       = os.getenv("REDIS_URL", "redis://redis:6379")
 
 STEMS = ["drums", "bass", "guitar", "piano", "vocals", "other"]
 CLEF_LABEL = {
@@ -56,59 +53,9 @@ CLEF_LABEL = {
 }
 
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
-
-_redis = None
-
-def _get_redis():
-    global _redis
-    if _redis is not None:
-        return _redis
-    try:
-        import redis
-        r = redis.from_url(REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
-        r.ping()
-        _redis = r
-        console.print("[dim]Redis cache connected.[/]")
-    except Exception:
-        console.print("[dim]Redis unavailable — running without cache.[/]")
-        _redis = False
-    return _redis
-
-
-def _fingerprint(audio_path: Path) -> str:
-    """SHA-256 of the first 64 KB — fast, unique enough for audio files."""
-    h = hashlib.sha256()
-    with open(audio_path, "rb") as f:
-        h.update(f.read(65536))
-    return h.hexdigest()[:16]
-
-
-def cache_get(fp: str, field: str) -> str | None:
-    r = _get_redis()
-    if not r:
-        return None
-    try:
-        val = r.hget(f"musikplus:{fp}", field)
-        return val.decode() if val else None
-    except Exception:
-        return None
-
-
-def cache_set(fp: str, field: str, value: str = "1") -> None:
-    r = _get_redis()
-    if not r:
-        return
-    try:
-        r.hset(f"musikplus:{fp}", field, value)
-    except Exception:
-        pass
-
-
 # ── Docker helpers ────────────────────────────────────────────────────────────
 
 def _compose_run(service: str, *args: str, label: str = "") -> None:
-    """Spin up a sibling service container and stream output with a spinner."""
     cmd = [
         "docker", "compose",
         "-p", COMPOSE_PROJECT,
@@ -150,25 +97,14 @@ def _compose_run(service: str, *args: str, label: str = "") -> None:
 
 # ── Steps ─────────────────────────────────────────────────────────────────────
 
-def step_detect(audio_file: str, fp: str) -> dict:
+def step_detect(audio_file: str) -> dict:
     console.rule("[bold]Step 1 — Instrument Detection[/]")
-
-    instruments_path = STEMS_DIR / "instruments.json"
-    cached = cache_get(fp, "instruments")
-
-    if cached and instruments_path.exists():
-        console.print("[dim]  cached[/]  [green]✓[/] Demucs 6s + RMS")
-        return json.loads(instruments_path.read_text())
-
     _compose_run("detector", f"/stems/audio/{audio_file}", "/stems", label="Demucs 6s + RMS")
-
+    instruments_path = STEMS_DIR / "instruments.json"
     if not instruments_path.exists():
         console.print("[red]instruments.json not found after detection.[/]")
         sys.exit(1)
-
-    instruments = json.loads(instruments_path.read_text())
-    cache_set(fp, "instruments", json.dumps(instruments))
-    return instruments
+    return json.loads(instruments_path.read_text())
 
 
 def step_choose(instruments: dict) -> str:
@@ -202,32 +138,13 @@ def step_choose(instruments: dict) -> str:
     ).ask()
 
 
-def step_separate(audio_file: str, instrument: str, fp: str) -> None:
+def step_separate(audio_file: str, instrument: str) -> None:
     console.rule("[bold]Step 2 — Stem Isolation[/]")
-
-    chosen_wav = STEMS_DIR / "chosen.wav"
-    cache_field = f"stem:{instrument}"
-    cached = cache_get(fp, cache_field)
-
-    if cached and chosen_wav.exists():
-        console.print(f"[dim]  cached[/]  [green]✓[/] Isolate {instrument}")
-        return
-
     _compose_run("demucs", f"/stems/audio/{audio_file}", instrument, label=f"Isolate {instrument}")
-    cache_set(fp, cache_field)
 
 
-def step_analyze(audio_file: str, instrument: str, duration: str, fp: str) -> None:
+def step_analyze(audio_file: str, instrument: str, duration: str) -> None:
     console.rule("[bold]Step 3 — Analysis[/]")
-
-    analysis_json = ANALYSIS_DIR / "analysis.json"
-    cache_field = f"analysis:{instrument}:{duration}"
-    cached = cache_get(fp, cache_field)
-
-    if cached and analysis_json.exists():
-        console.print("[dim]  cached[/]  [green]✓[/] Analysis")
-        return
-
     if instrument == "drums":
         _compose_run(
             "analyzer",
@@ -242,22 +159,16 @@ def step_analyze(audio_file: str, instrument: str, duration: str, fp: str) -> No
             label="Basic Pitch",
         )
 
-    cache_set(fp, cache_field)
 
-
-def step_sheet(title: str, fp: str) -> None:
+def step_sheet(title: str, instrument: str) -> None:
     console.rule("[bold]Step 4 — Sheet Music[/]")
-
-    cache_field = f"sheet:{title}"
-    cached = cache_get(fp, cache_field)
-    existing_pdf = next(OUTPUT_DIR.glob("*.pdf"), None) if OUTPUT_DIR.exists() else None
-
-    if cached and existing_pdf:
-        console.print("[dim]  cached[/]  [green]✓[/] LilyPond → PDF")
-        return
-
+    # Remove stale PDFs before generating
+    if OUTPUT_DIR.exists():
+        for old in OUTPUT_DIR.glob("sheet_*.pdf"):
+            old.unlink()
+        for old in OUTPUT_DIR.glob("sheet_*.ly"):
+            old.unlink()
     _compose_run("sheet", "/analysis", title, "/output", label="LilyPond → PDF")
-    cache_set(fp, cache_field)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -282,6 +193,12 @@ def main() -> None:
     audio_file = questionary.select("Select audio file:", choices=audio_files).ask()
     title = questionary.text("Score title:", default=Path(audio_file).stem).ask()
     duration = questionary.text("Max duration to analyse (seconds):", default="300").ask()
+    export_stem = questionary.confirm(
+        f"Export isolated stem as WAV?", default=False
+    ).ask()
+    gen_sheet = questionary.confirm(
+        "Generate sheet music (PDF)?", default=True
+    ).ask()
     console.print()
 
     # Stage audio into stems volume (sibling containers can't use the host bind on Mac)
@@ -292,31 +209,24 @@ def main() -> None:
         console.print(f"[dim]Copying {audio_file} into stems volume…[/]")
         shutil.copy2(src, dst)
 
-    fp = _fingerprint(src)
-
-    instruments = step_detect(audio_file, fp)
+    instruments = step_detect(audio_file)
     instrument  = step_choose(instruments)
 
-    export_stem = questionary.confirm(
-        f"Export isolated {instrument} stem as WAV?", default=False
-    ).ask()
-    gen_sheet = questionary.confirm(
-        "Generate sheet music (PDF)?", default=True
-    ).ask()
-    console.print()
-
-    step_separate(audio_file, instrument, fp)
-    step_analyze(audio_file, instrument, duration, fp)
+    step_separate(audio_file, instrument)
+    step_analyze(audio_file, instrument, duration)
     if gen_sheet:
-        step_sheet(title, fp)
+        step_sheet(title, instrument)
 
-    # Copy outputs from volumes to the host bind mount
+    # Copy outputs from the volumes to the host bind mount
     outputs: list[str] = []
     if HOST_OUTPUT.exists():
         if gen_sheet:
-            for pdf in sorted(OUTPUT_DIR.glob("*.pdf")) if OUTPUT_DIR.exists() else []:
-                shutil.copy2(pdf, HOST_OUTPUT / pdf.name)
-                outputs.append(pdf.name)
+            expected_pdf = OUTPUT_DIR / f"sheet_{instrument}.pdf"
+            if expected_pdf.exists():
+                shutil.copy2(expected_pdf, HOST_OUTPUT / expected_pdf.name)
+                outputs.append(expected_pdf.name)
+            else:
+                console.print(f"[yellow]Expected {expected_pdf.name} not found in output volume.[/]")
 
         if export_stem:
             chosen_wav = STEMS_DIR / "chosen.wav"

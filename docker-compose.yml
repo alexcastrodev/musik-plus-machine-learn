@@ -16,19 +16,8 @@ services:
     environment:
       COMPOSE_FILE: /project/docker-compose.yml
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-musikplus}
-      REDIS_URL: redis://redis:6379
     stdin_open: true
     tty: true
-    depends_on:
-      - redis
-
-  # ── Cache ─────────────────────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    command: redis-server --save 60 1
 
   # ── 1. Instrument detection ───────────────────────────────────────────────
   detector:
@@ -75,4 +64,3 @@ volumes:
   analysis:
   output:
   demucs_models:
-  redis_data:

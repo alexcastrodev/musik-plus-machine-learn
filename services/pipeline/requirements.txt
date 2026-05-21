@@ -1,3 +1,2 @@
 rich==13.7.1
 questionary==2.0.1
-redis==5.0.8

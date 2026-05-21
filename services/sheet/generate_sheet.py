@@ -21,13 +21,15 @@ from pathlib import Path
 
 def _compile_ly(ly_path: Path, out_dir: Path) -> Path:
     result = subprocess.run(
-        ["lilypond", f"--output={out_dir}", str(ly_path)],
+        ["lilypond", "--loglevel=ERROR", f"--output={out_dir}", str(ly_path)],
         capture_output=True, text=True,
     )
-    if result.returncode != 0:
+    pdf = out_dir / f"{ly_path.stem}.pdf"
+    # LilyPond exits non-zero for warnings-as-errors in some versions;
+    # treat it as a real failure only if the PDF was not produced.
+    if not pdf.exists():
         print("[sheet] LilyPond error:\n" + result.stderr, file=sys.stderr)
         sys.exit(1)
-    pdf = out_dir / f"{ly_path.stem}.pdf"
     print(f"[sheet] PDF: {pdf}", flush=True)
     return pdf
 
