@@ -1,0 +1,78 @@
+services:
+
+  # ── TUI orchestrator ──────────────────────────────────────────────────────
+  # Usage: docker compose run --rm -it pipeline
+  pipeline:
+    build: ./services/pipeline
+    image: musikplus-pipeline:latest
+    volumes:
+      - ./audio:/audio:ro
+      - stems:/stems
+      - analysis:/analysis
+      - output:/output
+      - ./output:/host-output                       # copies PDFs to host after sheet step
+      - /var/run/docker.sock:/var/run/docker.sock  # call sibling containers
+      - .:/project:ro                               # exposes docker-compose.yml
+    environment:
+      COMPOSE_FILE: /project/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-musikplus}
+      REDIS_URL: redis://redis:6379
+    stdin_open: true
+    tty: true
+    depends_on:
+      - redis
+
+  # ── Cache ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1
+
+  # ── 1. Instrument detection ───────────────────────────────────────────────
+  detector:
+    build: ./services/detector
+    image: musikplus-detector:latest
+    volumes:
+      - stems:/stems
+      - demucs_models:/root/.cache/torch/hub
+
+  # ── 2. Stem isolation ─────────────────────────────────────────────────────
+  demucs:
+    build: ./services/demucs
+    image: musikplus-demucs:latest
+    volumes:
+      - stems:/stems
+      - demucs_models:/root/.cache/torch/hub
+
+  # ── 3a. Drum analysis ─────────────────────────────────────────────────────
+  analyzer:
+    build: ./services/analyzer
+    image: musikplus-analyzer:latest
+    volumes:
+      - stems:/stems:ro
+      - analysis:/analysis
+
+  # ── 3b. Pitch analysis ────────────────────────────────────────────────────
+  analyzer-pitch:
+    build: ./services/analyzer-pitch
+    image: musikplus-analyzer-pitch:latest
+    volumes:
+      - stems:/stems:ro
+      - analysis:/analysis
+
+  # ── 4. Sheet music ────────────────────────────────────────────────────────
+  sheet:
+    build: ./services/sheet
+    image: musikplus-sheet:latest
+    volumes:
+      - analysis:/analysis:ro
+      - output:/output
+
+volumes:
+  stems:
+  analysis:
+  output:
+  demucs_models:
+  redis_data:
